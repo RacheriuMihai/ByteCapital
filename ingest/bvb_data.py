@@ -241,7 +241,14 @@ class BVBClient:
             "countback": self.countback,
             "currencyCode": currency,
         }
-        df = parse_history(self._get("history", params))
+        payload = self._get("history", params)
+
+        if symbol.upper() == CALENDAR_SYMBOL and payload.get("s") == "ok":
+            if isinstance(payload.get("v"), list):
+                payload = dict(payload)
+                payload["v"] = [0 if v is None else v for v in payload["v"]]
+
+        df = parse_history(payload)
         # countback caps the number of bars. If we hit the cap and the oldest bar
         # is later than the window start, the start of the window was cut off.
         if len(df) >= self.countback and df["date"].iloc[0] > pd.Timestamp(start):
@@ -372,7 +379,7 @@ def cmd_validate(args) -> int:
     info = client.symbol_info("TLV")
     print(f"[ok] symbols: {info.get('name')} - {info.get('description')}, "
           f"session {info.get('session')}, tz {info.get('timezone')}, {info.get('currency_code')}")
-    s, e = date(2025, 7, 7), date(2025, 7, 23)
+    s, e = date(2025, 7, 8), date(2025, 7, 23)
     raw = client.history_daily("TLV", s, e, adjusted=False)
     adj = client.history_daily("TLV", s, e, adjusted=True)
     print(f"[{'ok' if len(raw) == 12 else 'CHECK'}] TLV {s}..{e}: raw {len(raw)} bars, adjusted {len(adj)} bars "
