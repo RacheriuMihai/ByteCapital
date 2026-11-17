@@ -7,3 +7,10 @@ __pycache__/
 .DS_Store
 *.egg-info/
 .streamlit/secrets.toml
+
+# token BVB (ingest/bvb_data.py) — nu se comite niciodată
+.env
+
+# cache BVB: în afara repo-ului până primim acordul scris al BVB
+data/raw/bvb/*.csv
+data/raw/bvb/*.tmp

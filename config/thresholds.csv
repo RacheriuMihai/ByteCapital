@@ -1,2 +1,2 @@
-valid_from,full_mcap_usd_m,ff_mcap_usd_m,atvr_min,min_companies,reviews_needed
-2026-06-01,3937,1969,0.15,3,8
+valid_from,full_mcap_usd_m,ff_mcap_usd_m,min_fif,low_fif_multiplier,atvr_12m,atvr_3m,fot_3m,fot_quarters,min_companies,reviews_needed,source
+2026-11-01,4343,2172,0.15,1.8,0.15,0.15,0.80,4,3,8,MSCI GIMI methodology Nov 2026 (Emerging Market column)

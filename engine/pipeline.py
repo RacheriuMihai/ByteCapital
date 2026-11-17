@@ -1,53 +1,116 @@
 # engine/pipeline.py — leagă totul: încarcă datele, aplică scenariul, rulează testele
+#
+# Prețuri și volume, în ordinea priorității:
+#   1. data/raw/bvb/<SIMBOL>_RON_raw.csv  (cache-ul din ingest/bvb_data.py, nerajustat)
+#   2. data/trades.csv                     (exporturi manuale; close_ron, volume_shares)
+# Calendarul de tranzacționare: BET_RON_raw.csv dacă există, altfel zilele în care
+# a tranzacționat cel puțin o acțiune.
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 
-from . import metrics
-from .scenarios import apply as apply_levers
+from . import liquidity as liq
+from .free_float import free_float_table
 from .gap_list import build as build_gap_list
+from .scenarios import apply as apply_levers
 
 ROOT = Path(__file__).resolve().parents[1]
+RAW_DIR = ROOT / "data" / "raw" / "bvb"
+CALENDAR_SYMBOL = "BET"
+
+
+def _load_bars(issuers: pd.DataFrame) -> dict:
+    """{simbol: DataFrame[date, close, volume]} pentru simbolurile din issuers.csv (+ BET)."""
+    bars = {}
+    for sym in list(issuers["ticker"]) + [CALENDAR_SYMBOL]:
+        p = RAW_DIR / f"{sym}_RON_raw.csv"
+        if p.exists():
+            bars[sym] = pd.read_csv(p, parse_dates=["date"])[["date", "close", "volume"]]
+    trades_path = ROOT / "data" / "trades.csv"
+    if trades_path.exists():
+        t = pd.read_csv(trades_path, parse_dates=["date"])
+        for sym, g in t.groupby("ticker"):
+            if sym not in bars:  # cache-ul automat are prioritate
+                bars[sym] = (g.rename(columns={"close_ron": "close", "volume_shares": "volume"})
+                             [["date", "close", "volume"]].reset_index(drop=True))
+    return bars
+
+
+def _calendar(bars: dict) -> pd.DatetimeIndex:
+    if CALENDAR_SYMBOL in bars and not bars[CALENDAR_SYMBOL].empty:
+        return pd.DatetimeIndex(bars[CALENDAR_SYMBOL]["date"]).sort_values()
+    days = set()
+    for sym, b in bars.items():
+        if sym != CALENDAR_SYMBOL:
+            days.update(b.loc[b["volume"] > 0, "date"])
+    return pd.DatetimeIndex(sorted(days))
 
 
 def _load():
-    th = pd.read_csv(ROOT / "config" / "thresholds.csv").iloc[-1]
+    th = liq.Thresholds.from_csv(ROOT / "config" / "thresholds.csv")
     issuers = pd.read_csv(ROOT / "data" / "issuers.csv")
     shareholders = pd.read_csv(ROOT / "data" / "shareholders.csv")
-    trades = pd.read_csv(ROOT / "data" / "trades.csv", parse_dates=["date"])
     fx_path = ROOT / "data" / "fx_usd.csv"
-    if fx_path.exists():
-        fx = pd.read_csv(fx_path, parse_dates=["date"])
-    else:
-        fx = pd.DataFrame(columns=["date", "ron_per_usd"])
-    return th, issuers, shareholders, trades, fx
+    fx = (pd.read_csv(fx_path, parse_dates=["date"]) if fx_path.exists()
+          else pd.DataFrame(columns=["date", "ron_per_usd"]))
+    return th, issuers, shareholders, _load_bars(issuers), fx
+
+
+def fx_at_reviews(fx: pd.DataFrame, reviews) -> dict:
+    """Cursul BNR din ultima zi publicată până la sfârșitul fiecărei luni de review."""
+    f = fx.sort_values("date")
+    out = {}
+    for rv in reviews:
+        upto = f[f["date"] <= rv.to_timestamp(how="end")]
+        if not upto.empty:
+            out[rv] = float(upto["ron_per_usd"].iloc[-1])
+    return out
+
+
+def complete_reviews(calendar: pd.DatetimeIndex) -> list:
+    """Lunile de review (mar., iun., sep., dec.) încheiate în datele disponibile."""
+    if len(calendar) == 0:
+        return []
+    last = calendar.max()
+    reviews = liq.review_months(calendar.min(), last)
+    return [rv for rv in reviews if rv.to_timestamp(how="end").normalize() <= last
+            or rv < pd.Period(last, "M")]
+
+
+def _empty(th, last_fx):
+    e = pd.DataFrame()
+    return SimpleNamespace(tests=e, gap_list=build_gap_list(e), history=e, streak=e,
+                           review=None, n_pass_all=0, country_streak=0, fx=last_fx, th=th)
 
 
 def run(levers: dict | None = None) -> SimpleNamespace:
-    th, issuers, shareholders, trades, fx = _load()
-    issuers, shareholders, trades, fx = apply_levers(levers or {}, issuers, shareholders, trades, fx)
+    th, issuers, shareholders, bars, fx = _load()
+    bars, shareholders, fx = apply_levers(levers or {}, bars, shareholders, fx)
+    last_fx = float(fx.sort_values("date")["ron_per_usd"].iloc[-1]) if not fx.empty else float("nan")
 
-    last_fx = float(fx.sort_values("date").ron_per_usd.iloc[-1]) if not fx.empty else float("nan")
+    symbols = [s for s in issuers["ticker"] if s in bars]
+    if not symbols:
+        return _empty(th, last_fx)
 
-    if trades.empty or fx.empty or issuers.empty:
-        empty = pd.DataFrame()
-        return SimpleNamespace(tests=empty, gap_list=empty, monthly=empty,
-                               n_pass_all=0, country_streak=0, fx=last_fx, th=th)
+    calendar = _calendar(bars)
+    reviews = complete_reviews(calendar)
+    if not reviews:
+        return _empty(th, last_fx)
+    fx_rv = fx_at_reviews(fx, reviews)
 
-    ff = metrics.free_float_shares(issuers, shareholders)
-    m = metrics.monthly_table(trades, fx, ff)
-    m = metrics.run_tests(m, th)
+    ff = free_float_table(shareholders, tickers=symbols).set_index("ticker")
+    shares = issuers.set_index("ticker")["shares_outstanding"]
 
-    latest = m[m.month == m.month.max()].reset_index(drop=True)
-    gap = build_gap_list(latest, th)
+    frames = [liq.evaluate_company(sym, bars[sym], calendar, float(shares[sym]),
+                                   float(ff.loc[sym, "fif"]), fx_rv, reviews, th)
+              for sym in symbols]
+    history = pd.concat(frames, ignore_index=True)
+    streak = liq.country_streak(history, th)
 
-    # streak: evaluări consecutive în care >= min_companies companii trec toate testele
-    by_month = m.groupby("month").pass_all.sum().sort_index()
-    streak = 0
-    for n_pass in by_month:
-        streak = streak + 1 if n_pass >= th.min_companies else 0
-
-    return SimpleNamespace(tests=latest, gap_list=gap, monthly=m,
-                           n_pass_all=int(latest.pass_all.sum()),
-                           country_streak=int(streak), fx=last_fx, th=th)
+    latest_review = str(reviews[-1])
+    latest = history[history["review"] == latest_review].reset_index(drop=True)
+    return SimpleNamespace(
+        tests=latest, gap_list=build_gap_list(latest), history=history, streak=streak,
+        review=latest_review, n_pass_all=int(latest["pass_all"].sum()),
+        country_streak=int(streak["streak"].iloc[-1]), fx=last_fx, th=th)

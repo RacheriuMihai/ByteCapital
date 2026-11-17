@@ -32,11 +32,15 @@ c2.metric("Evaluări consecutive", res.country_streak,
 c3.metric("Curs BNR folosit", "—" if math.isnan(res.fx) else f"{res.fx:.4f}")
 
 if res.tests.empty:
-    st.info("Nu există încă date. Completați data/trades.csv, data/shareholders.csv, "
-            "data/issuers.csv și rulați `python ingest/bnr.py` pentru curs.")
+    st.info("Nu există încă date. Rulați `python ingest/bvb_data.py sync` (sau completați "
+            "data/trades.csv), completați data/issuers.csv și data/shareholders.csv, "
+            "apoi `python ingest/bnr.py` pentru curs. Trebuie cel puțin un trimestru încheiat.")
 else:
-    st.subheader("Teste pe companie (ultima lună)")
+    st.subheader(f"Teste pe companie (review {res.review})")
     st.dataframe(res.tests, width="stretch")
+
+    st.subheader("Seria de review-uri trimestriale")
+    st.dataframe(res.streak, width="stretch")
 
     st.subheader("Lista de deficit de lichiditate")
     st.dataframe(res.gap_list, width="stretch")

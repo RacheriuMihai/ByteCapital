@@ -1,4 +1,5 @@
 # ingest/bnr.py — preia cursul RON/USD de la BNR (XML anual, fără namespace fixat)
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -50,7 +51,15 @@ def fetch_usd(year: int) -> pd.DataFrame:
 
 if __name__ == "__main__":
     Path("data").mkdir(exist_ok=True)
-    fx = pd.concat([fetch_usd(y) for y in (2024, 2025, 2026)], ignore_index=True)
+    frames = []
+    for y in range(2024, date.today().year + 1):  # din 2024 (fereastra celui mai vechi review) până azi
+        try:
+            frames.append(fetch_usd(y))
+        except RuntimeError as e:
+            if y < date.today().year:
+                raise
+            print(f"Atenție: încă nu există curs BNR pentru {y} ({e.__cause__}); îl sar.")
+    fx = pd.concat(frames, ignore_index=True)
     fx = fx.drop_duplicates("date").sort_values("date")
     fx.to_csv("data/fx_usd.csv", index=False)
     print(f"OK: {len(fx)} zile, ultima {fx.date.max().date()} la {fx.ron_per_usd.iloc[-1]:.4f} RON/USD")
