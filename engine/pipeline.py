@@ -5,6 +5,8 @@
 #   2. data/trades.csv                     (exporturi manuale; close_ron, volume_shares)
 # Calendarul de tranzacționare: BET_RON_raw.csv dacă există, altfel zilele în care
 # a tranzacționat cel puțin o acțiune.
+# Numărul de acțiuni: data/shares_history.csv (dacă există) dă numărul valabil în
+# fiecare lună; companiile care lipsesc de acolo folosesc valoarea din issuers.csv.
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,7 +20,7 @@ from .scenarios import apply as apply_levers
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "raw" / "bvb"
 CALENDAR_SYMBOL = "BET"
-
+SHARES_HISTORY_COLS = ["ticker", "effective_date", "shares_outstanding", "event", "source"]
 
 def _load_bars(issuers: pd.DataFrame) -> dict:
     """{simbol: DataFrame[date, close, volume]} pentru simbolurile din issuers.csv (+ BET)."""
@@ -46,7 +48,29 @@ def _calendar(bars: dict) -> pd.DatetimeIndex:
             days.update(b.loc[b["volume"] > 0, "date"])
     return pd.DatetimeIndex(sorted(days))
 
+def _load_shares_history() -> pd.DataFrame:
+    p = ROOT / "data" / "shares_history.csv"
+    if not p.exists():
+        return pd.DataFrame(columns=SHARES_HISTORY_COLS)
+    h = pd.read_csv(p)
+    missing = [c for c in SHARES_HISTORY_COLS if c not in h.columns]
+    if missing:
+        raise ValueError(f"shares_history.csv: lipsesc coloanele {missing}")
+    h["effective_date"] = pd.to_datetime(h["effective_date"])
+    return h
 
+
+def shares_for(sym: str, history: pd.DataFrame, months, current: float):
+    """Numărul de acțiuni pentru un simbol: o valoare constantă (dacă nu are istoric)
+    sau o serie pe luni. Ultimul rând din istoric trebuie să fie egal cu issuers.csv."""
+    h = history[history["ticker"] == sym]
+    if h.empty:
+        return float(current)
+    latest = h.sort_values("effective_date")["shares_outstanding"].iloc[-1]
+    if int(latest) != int(current):
+        raise ValueError(f"{sym}: ultimul rând din shares_history.csv ({int(latest)}) "
+                         f"diferă de issuers.csv ({int(current)})")
+    return liq.shares_by_month(h, months, current)
 def _load():
     th = liq.Thresholds.from_csv(ROOT / "config" / "thresholds.csv")
     issuers = pd.read_csv(ROOT / "data" / "issuers.csv")
@@ -54,7 +78,7 @@ def _load():
     fx_path = ROOT / "data" / "fx_usd.csv"
     fx = (pd.read_csv(fx_path, parse_dates=["date"]) if fx_path.exists()
           else pd.DataFrame(columns=["date", "ron_per_usd"]))
-    return th, issuers, shareholders, _load_bars(issuers), fx
+    return th, issuers, shareholders, _load_bars(issuers), fx, _load_shares_history()
 
 
 def fx_at_reviews(fx: pd.DataFrame, reviews) -> dict:
@@ -85,7 +109,7 @@ def _empty(th, last_fx):
 
 
 def run(levers: dict | None = None) -> SimpleNamespace:
-    th, issuers, shareholders, bars, fx = _load()
+    th, issuers, shareholders, bars, fx, shares_history = _load()
     bars, shareholders, fx = apply_levers(levers or {}, bars, shareholders, fx)
     last_fx = float(fx.sort_values("date")["ron_per_usd"].iloc[-1]) if not fx.empty else float("nan")
 
@@ -102,7 +126,9 @@ def run(levers: dict | None = None) -> SimpleNamespace:
     ff = free_float_table(shareholders, tickers=symbols).set_index("ticker")
     shares = issuers.set_index("ticker")["shares_outstanding"]
 
-    frames = [liq.evaluate_company(sym, bars[sym], calendar, float(shares[sym]),
+    months = pd.period_range(calendar.min(), calendar.max(), freq="M")
+    frames = [liq.evaluate_company(sym, bars[sym], calendar,
+                                   shares_for(sym, shares_history, months, float(shares[sym])),
                                    float(ff.loc[sym, "fif"]), fx_rv, reviews, th)
               for sym in symbols]
     history = pd.concat(frames, ignore_index=True)

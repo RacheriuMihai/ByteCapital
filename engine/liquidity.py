@@ -47,11 +47,38 @@ def review_months(start, end) -> list[pd.Period]:
     months = pd.period_range(pd.Period(start, "M"), pd.Period(end, "M"), freq="M")
     return [m for m in months if m.month in REVIEW_MONTHS]
 
+def _for_month(value, month):
+    """value is a number (same every month) or a Series indexed by month."""
+    if isinstance(value, pd.Series):
+        return value.get(month, np.nan)
+    return value
 
-def monthly_liquidity(bars: pd.DataFrame, calendar, ff_shares: float,
+
+def shares_by_month(history: pd.DataFrame, months, default: float) -> pd.Series:
+    """Share count valid at the end of each month.
+
+    history: rows with effective_date (ex-date) and shares_outstanding for one
+    company. Each row applies from its effective_date on. Months before the first
+    row take the first row's count. Empty history -> `default` for every month."""
+    months = pd.PeriodIndex(months, freq="M")
+    if history is None or history.empty:
+        return pd.Series(float(default), index=months)
+    h = history.assign(effective_date=pd.to_datetime(history["effective_date"]))
+    h = h.sort_values("effective_date")
+    out = []
+    for m in months:
+        valid = h[h["effective_date"] <= m.to_timestamp(how="end")]
+        row = valid.iloc[-1] if len(valid) else h.iloc[0]
+        out.append(float(row["shares_outstanding"]))
+    return pd.Series(out, index=months)
+
+def monthly_liquidity(bars: pd.DataFrame, calendar, ff_shares,
                       median_over: str = "traded") -> pd.DataFrame:
     """One row per calendar month: median value, days traded, possible days,
     month-end close and free-float cap (RON), MTVR.
+
+    ff_shares: one number for every month, or a pd.Series indexed by month
+    (pd.Period "M") when the share count changed during the period.
 
     median_over="traded": median over days the stock traded (default).
     median_over="all": zero-value days on the calendar count in the median.
@@ -77,7 +104,8 @@ def monthly_liquidity(bars: pd.DataFrame, calendar, ff_shares: float,
         median = float(vals.median()) if len(vals) else 0.0
         days = int(g["traded"].sum())
         close_end = g["close"].iloc[-1]
-        ff_cap = close_end * ff_shares if pd.notna(close_end) else np.nan
+        ffs = _for_month(ff_shares, month)
+        ff_cap = close_end * ffs if pd.notna(close_end) and pd.notna(ffs) else np.nan
         mtvr = median * days / ff_cap if pd.notna(ff_cap) and ff_cap > 0 else np.nan
         rows.append({"month": month, "median_value_ron": median, "days_traded": days,
                      "possible_days": len(g), "close_end_ron": close_end,
@@ -126,12 +154,14 @@ def size_tests(close_ron: float, shares_total: float, fif: float, ron_per_usd: f
     }
 
 
-def evaluate_company(symbol: str, bars: pd.DataFrame, calendar, shares_total: float, fif: float,
+def evaluate_company(symbol: str, bars: pd.DataFrame, calendar, shares_total, fif: float,
                      fx: dict, reviews, th: Thresholds = Thresholds(),
                      median_over: str = "traded") -> pd.DataFrame:
     """All tests for one company at each review. fx maps review Period -> RON per USD.
     A review without an FX rate gets NaN size results and fails the size tests.
-    Free float and share count are held constant across reviews (flagged simplification)."""
+    shares_total: one number, or a Series by month (see shares_by_month) when the
+    share count changed. The free-float share (FIF) is held constant (flagged
+    simplification)."""
     monthly = monthly_liquidity(bars, calendar, shares_total * fif, median_over)
     rows = []
     for rv in reviews:
@@ -140,8 +170,9 @@ def evaluate_company(symbol: str, bars: pd.DataFrame, calendar, shares_total: fl
         mrow = monthly[monthly["month"] == rv]
         close = mrow["close_end_ron"].iloc[0] if len(mrow) else np.nan
         rate = fx.get(rv)
-        if rate and pd.notna(close):
-            size = size_tests(close, shares_total, fif, rate, th)
+        shares_rv = _for_month(shares_total, rv)
+        if rate and pd.notna(close) and pd.notna(shares_rv):
+            size = size_tests(close, shares_rv, fif, rate, th)
         else:
             size = {"full_mcap_usd_m": np.nan, "ff_mcap_usd_m": np.nan, "ff_needed_usd_m": np.nan,
                     "ff_gap_usd_m": np.nan, "full_gap_usd_m": np.nan, "pass_full": False, "pass_ff": False}

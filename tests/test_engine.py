@@ -224,3 +224,71 @@ def test_api_records_have_no_nan():
     from api.main import _records
     df = pd.DataFrame({"a": [1.0, float("nan")], "b": [[0.9, float("nan")], [1.0]]})
     assert _records(df) == [{"a": 1.0, "b": [0.9, None]}, {"a": None, "b": [1.0]}]
+
+
+# ---------------------------------------------------------------- istoric nr actiuni
+
+def test_shares_by_month():
+    h = pd.DataFrame({"effective_date": ["2025-01-01", "2025-04-08"],
+                      "shares_outstanding": [100, 300]})
+    months = pd.period_range("2024-12", "2025-06", freq="M")
+    s = liq.shares_by_month(h, months, default=999)
+    # dec. 2024 e inainte de primul rand -> ia primul rand; aprilie e dupa data ex -> 300
+    assert list(s) == [100, 100, 100, 100, 300, 300, 300]
+    empty = liq.shares_by_month(h.iloc[0:0], months, default=999)
+    assert (empty == 999).all()
+
+
+def test_split_keeps_free_float_cap_continuous():
+    # split 3:1 pe 8 aprilie 2025: pretul scade de la 30 la 10, volumul se tripleaza
+    b = bars(close=30.0, volume=100_000)
+    after = b["date"] >= "2025-04-08"
+    b.loc[after, "close"] = 10.0
+    b.loc[after, "volume"] = 300_000
+    months = pd.period_range("2025-01", "2025-12", freq="M")
+    h = pd.DataFrame({"effective_date": ["2025-01-01", "2025-04-08"],
+                      "shares_outstanding": [100_000_000, 300_000_000]})
+    shares = liq.shares_by_month(h, months, default=300_000_000)
+    good = liq.monthly_liquidity(b, CAL, shares * 0.5)
+    assert good["ff_cap_ron"].round().nunique() == 1         # 1,5 mld. RON în fiecare lună
+    # cu nr de acțiuni de azi pentru tot istoricul, ian.-mar. ar iesi de 3 ori prea mari
+    wrong = liq.monthly_liquidity(b, CAL, 300_000_000 * 0.5)
+    assert wrong.loc[0, "ff_cap_ron"] == pytest.approx(3 * good.loc[0, "ff_cap_ron"])
+    assert wrong.loc[0, "mtvr"] == pytest.approx(good.loc[0, "mtvr"] / 3)
+
+
+def test_size_tests_use_share_count_of_the_review_month():
+    h = pd.DataFrame({"effective_date": ["2025-01-01", "2025-07-01"],
+                      "shares_outstanding": [1e9, 2e9]})
+    months = pd.period_range("2025-01", "2025-12", freq="M")
+    shares = liq.shares_by_month(h, months, default=2e9)
+    fx = {pd.Period("2025-06", "M"): 1.0, pd.Period("2025-12", "M"): 1.0}
+    r = liq.evaluate_company("AAA", bars(close=5.0), CAL, shares, 0.5, fx,
+                             ["2025-06", "2025-12"]).set_index("review")
+    assert r.loc["2025-06", "full_mcap_usd_m"] == pytest.approx(5_000)
+    assert r.loc["2025-12", "full_mcap_usd_m"] == pytest.approx(10_000)
+
+
+def test_pipeline_reads_shares_history(repo):
+    (repo.ROOT / "data" / "shares_history.csv").write_text(
+        "ticker,effective_date,shares_outstanding,event,source\n"
+        "AAA,2025-01-01,1000000000,start,test\n"
+        "AAA,2025-07-01,2000000000,actiuni gratuite,test\n")
+    h = repo.run().history.set_index(["symbol", "review"])
+    assert h.loc[("AAA", "2025-06"), "full_mcap_usd_m"] == pytest.approx(5_000)
+    assert h.loc[("AAA", "2025-12"), "full_mcap_usd_m"] == pytest.approx(10_000)
+    assert h.loc[("BBB", "2025-06"), "full_mcap_usd_m"] == pytest.approx(10_000)  # fara istoric
+
+
+def test_pipeline_rejects_history_that_disagrees_with_issuers(repo):
+    (repo.ROOT / "data" / "shares_history.csv").write_text(
+        "ticker,effective_date,shares_outstanding,event,source\n"
+        "AAA,2025-01-01,1500000000,start,test\n")              # issuers.csv spune 2e9
+    with pytest.raises(ValueError, match="diferă de issuers.csv"):
+        repo.run()
+
+
+def test_pipeline_rejects_history_without_columns(repo):
+    (repo.ROOT / "data" / "shares_history.csv").write_text("ticker,date,shares\nAAA,2025-01-01,1\n")
+    with pytest.raises(ValueError, match="lipsesc coloanele"):
+        repo.run()

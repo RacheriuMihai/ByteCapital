@@ -27,6 +27,7 @@ Optional API: `uvicorn api.main:app --reload` (docs at /docs).
 | `data/trades.csv` | daily trades per ticker, manual BVB exports | fallback, used only for symbols with no cache file |
 | `data/fx_usd.csv` | BNR RON/USD rates | automatic (GitHub Actions, daily) |
 | `data/issuers.csv` | shares outstanding, Pillar II stake | manual |
+| `data/shares_history.csv` | share count changes since 2024 (bonus shares, splits, cancellations), from the ex-date | manual, checked with `bvb_data.py adjcheck` |
 | `data/shareholders.csv` | named holders, `type`, source and date | manual, from issuer reports and BVB "Structura actionariat" |
 | `config/thresholds.csv` | MSCI-style thresholds (GIMI, Nov 2026) | manual, with source |
 
@@ -57,5 +58,7 @@ contradicts `type`. FIF is rounded the MSCI way (2.5% steps above 25%, 0.5% from
 - Reviews: cut-offs in March, June, September, December. The market qualifies at a
   review when at least 3 companies pass everything; the target is 8 in a row.
 
-Simplification: share count and free float are held at their current values for
-the whole history.
+Share count per month comes from `data/shares_history.csv` (the count valid at
+month end); companies not listed there keep the value from `issuers.csv`, and the
+last row of a company's history must equal `issuers.csv`. Simplification: the
+free-float share (FIF) is held at its current value for the whole history.
