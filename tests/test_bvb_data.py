@@ -117,6 +117,34 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(session.headers["Referer"].startswith("https://m.bvb.ro"))
         self.assertIn("Mozilla", session.headers["User-Agent"])
 
+
+    def test_bet_none_volume(self):
+        payload = dict(TLV)
+        payload["v"] = [None] + TLV["v"][1:]
+
+        client, _, _ = make_client([FakeResponse(200, payload)])
+
+        df = client.history_daily(
+            "BET", date(2025, 7, 8), date(2025, 7, 21)
+        )
+
+        self.assertEqual(len(df), 10)
+        self.assertEqual(df["volume"].iloc[0], 0)
+        self.assertEqual(df["volume"].iloc[1], 294563)
+        self.assertEqual(df["volume"].dtype, "int64")
+
+    def test_none_volume_not_replaced_for_stocks(self):
+        payload = dict(TLV)
+        payload["v"] = [None] + TLV["v"][1:]
+
+        client, _, _ = make_client([FakeResponse(200, payload)])
+
+        with self.assertRaises((TypeError, ValueError, bd.BVBError)):
+            client.history_daily(
+                "TLV", date(2025, 7, 8), date(2025, 7, 21)
+            )
+
+
     def test_adjusted_flag(self):
         client, session, _ = make_client([FakeResponse(200, TLV)])
         client.history_daily("TLV", date(2025, 7, 8), date(2025, 7, 21), adjusted=True)
