@@ -1,1 +1,9 @@
 ticker,effective_date,shares_outstanding,event,source
+TLV,2024-01-01,798658233,start,adjcheck 2026-11-19 (calculat din raportul de pret)
+TLV,2024-07-18,916879846,actiuni gratuite,adjcheck 2026-11-19 (calculat din raportul de pret)
+TLV,2025-07-17,1090322225,actiuni gratuite,raport TLV 20.07.2026 (capital inainte de majorare)
+TLV,2026-07-16,1247586650,actiuni gratuite,bvb.ro Informatii emisiune 18.11.2026
+SNG,2024-01-01,385422400,start,adjcheck 2026-11-19 (raport 1:10)
+SNG,2024-05-28,3854224000,actiuni gratuite,bvb.ro Informatii emisiune 18.11.2026
+DIGI,2024-01-01,100000000,start,raport DIGI feb. 2026 (64.556.028 A + 35.443.972 B)
+DIGI,2026-04-07,291215226,actiuni gratuite,bvb.ro Informatii emisiune 18.11.2026
